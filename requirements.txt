@@ -1,0 +1,6 @@
+opencv-python
+mtcnn
+deepface
+numpy
+scikit-learn
+pickle
