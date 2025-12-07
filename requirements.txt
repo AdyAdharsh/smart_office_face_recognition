@@ -3,4 +3,3 @@ mtcnn
 deepface
 numpy
 scikit-learn
-pickle
