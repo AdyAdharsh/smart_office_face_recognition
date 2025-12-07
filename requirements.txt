@@ -3,3 +3,8 @@ mtcnn
 deepface
 numpy
 scikit-learn
+opencv-python
+tensorflow
+keras
+# Add this crucial line if it's missing (needed for modern TensorFlow/Keras 3 compatibility)
+tf-keras
