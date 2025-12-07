@@ -6,13 +6,10 @@ import numpy as np
 import time
 
 # Import your core logic
-# Ensure these imports use the correct absolute paths if needed, 
-# though running from the root usually handles 'src' package correctly.
 from src.RecognitionModel import RecognitionModel
 from src.LogManager import LogManager
 
 # --- Initialization (runs once) ---
-# Use Streamlit's cache to ensure heavy models only load once
 @st.cache_resource
 def load_resources():
     st.info("Loading ML models (FaceNet, etc.). This happens only once...")
@@ -29,9 +26,8 @@ col1, col2 = st.columns([2, 1])
 
 with col1:
     st.header("Live Recognition Feed")
-    # --- FIX: Use st.empty() for safe placeholder initialization ---
+    # Placeholder for the video feed
     FRAME_HOLDER = st.empty() 
-    # -----------------------------------------------------------------
 
 with col2:
     st.header("Access Log (DB)")
@@ -50,20 +46,30 @@ st.markdown("---")
 
 # --- Real-Time Processing Loop ---
 
-# Use Streamlit's session state to manage the camera state (optional, but good practice)
+# Use Streamlit's session state to manage the camera state
 if 'start_camera' not in st.session_state:
     st.session_state.start_camera = True
 
 if st.session_state.start_camera:
     
+    # --- FIX 1: Initialize status_text container outside the conditional check ---
+    # This prevents the NameError if the camera fails immediately.
+    status_text = st.empty() 
+    # --------------------------------------------------------------------------
+    
     # Use OpenCV to capture the video
     cap = cv2.VideoCapture(0)
 
     if not cap.isOpened():
-        st.error("Cannot open webcam. Please ensure your camera is not in use.")
+        # Use the initialized container to show the error
+        status_text.error("Cannot open webcam. Camera access denied or busy. Check permissions.")
+        
+        # --- FIX 2: Stop execution cleanly if camera access is denied ---
+        st.stop()
+        # --------------------------------------------------------------
+        
     else:
-        # Streamlit requires a container to show progress
-        status_text = st.empty()
+        # Use the initialized container to show info
         status_text.info("Recognition running... Look into the camera.")
         
         while cap.isOpened():
@@ -81,18 +87,15 @@ if st.session_state.start_camera:
             # 1. Update Video Feed (Streamlit uses RGB)
             processed_frame_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
             
-            # --- FIX: Update the placeholder with the actual image and caption ---
             FRAME_HOLDER.image(
                 processed_frame_rgb, 
-                caption="Live Webcam Stream (640px)", # Caption passed here
+                caption="Live Webcam Stream (640px)",
                 channels="RGB", 
                 width=640
             )
-            # -----------------------------------------------------------------
 
             # 2. Log to DB and Update Display 
-            if log_data and log_data.get('user_id') != 'Unknown': # Only log successful or definite attempts
-                # Log the event to SQLite
+            if log_data and log_data.get('user_id') != 'Unknown':
                 log_manager.log_access_event(
                     log_data.get('user_id'), 
                     log_data.get('status'), 
@@ -114,6 +117,6 @@ if st.session_state.start_camera:
             # Streamlit loop needs to yield control quickly
             time.sleep(0.01)
 
-    # Cleanup
+    # Cleanup (Only runs if the while loop is broken out of, but safe now)
     cap.release()
     status_text.warning("Application stopped.")
