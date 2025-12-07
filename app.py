@@ -1,84 +1,100 @@
-# app.py
+# app.py (Streamlit WebRTC Cloud Deployment)
 
+import streamlit as st
 import cv2
 import time
-from fastapi import FastAPI, Request, Depends
-from fastapi.responses import HTMLResponse, StreamingResponse
-from fastapi.templating import Jinja2Templates
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, WebRtcMode
+
+# NOTE: Assuming src.RecognitionModel and src.LogManager exist and are updated
 from src.RecognitionModel import RecognitionModel
-from src.LogManager import LogManager # Your in-memory LogManager
-import uvicorn
+from src.LogManager import LogManager 
 
 # --- INITIALIZATION ---
-model = RecognitionModel()
-log_manager = LogManager()
-templates = Jinja2Templates(directory="templates")
 
-app = FastAPI()
+# Initialize your Recognition Model and Log Manager.
+# Streamlit's @st.cache_resource decorator handles the slow, synchronous loading of Keras/TF 
+# models by running it only once and caching the result, preventing the timeout issue 
+# you experienced with FastAPI.
+@st.cache_resource
+def load_resources():
+    """Loads the heavy Recognition Model and LogManager only once."""
+    st.write("Initializing ML Models (This takes a moment)...")
+    model = RecognitionModel()
+    log_manager = LogManager()
+    st.write("Initialization complete.")
+    return model, log_manager
 
-# --- Generator function that produces JPEG frames ---
-# NOTE: This must be synchronous so OpenCV's blocking read() works in a threadpool
-def generate_frames(model: RecognitionModel, log_manager: LogManager, camera_index=0):
-    # Use WebRTC/similar logic if deploying to cloud, but this local code is for the structure
-    cap = cv2.VideoCapture(camera_index) 
+# Load the resources globally
+model, log_manager = load_resources()
 
-    if not cap.isOpened():
-        print("ERROR: Cannot open webcam.")
-        return 
+# --- VIDEO TRANSFORMER CLASS ---
 
-    while True:
-        success, frame = cap.read()
-        if not success:
-            break
-        
+class FaceRecognitionTransformer(VideoTransformerBase):
+    """
+    A class that takes a video frame, processes it for face recognition, 
+    and returns the annotated frame.
+    """
+    def __init__(self, model, log_manager):
+        self.model = model
+        self.log_manager = log_manager
+
+    def transform(self, frame):
+        # Convert the incoming video frame (from WebRTC) to an OpenCV array
+        img = frame.to_ndarray(format="bgr")
+
         # 1. Process Frame (Your Recognition Logic)
-        # Your model.process_frame returns: processed_frame, log_msg, recognized_user, log_data
-        processed_frame, _, _, log_data = model.process_frame(frame, detector_mode='cnn')
-        
-        # 2. Encode Frame to JPEG
-        # Use JPEG encoding for better browser compatibility and streaming performance
-        ret, buffer = cv2.imencode('.jpg', processed_frame)
-        
-        if not ret:
-            continue
+        # This calls your core function to perform detection and recognition
+        processed_img, log_msg, recognized_user, log_data = self.model.process_frame(img, detector_mode='cnn')
 
-        # 3. Log Event (Access Log)
+        # 2. Log Event
         if log_data and log_data.get('user_id') != 'Unknown':
-            log_manager.log_access_event(
+            self.log_manager.log_access_event(
                 log_data.get('user_id'), 
                 log_data.get('status'), 
                 log_data.get('confidence')
             )
 
-        # 4. Yield the Frame for the StreamingResponse
-        yield (
-            b'--frame\r\n'
-            b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n'
-        )
+        # Return the annotated frame back to the Streamlit video component
+        return processed_img
 
-# --- Endpoint Definitions ---
+# --- STREAMLIT UI LAYOUT ---
 
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    """Serve the HTML template."""
-    return templates.TemplateResponse("index.html", {"request": request})
+st.set_page_config(page_title="Smart Office Face Recognition", layout="wide")
+st.title("👨‍💼 Smart Office Face Recognition System")
+st.markdown("---")
 
+# Instructions and Live Feed Section
+col1, col2 = st.columns([2, 1])
 
-@app.get("/video_feed")
-async def video_feed():
-    """Endpoint that returns the video stream."""
-    # The StreamingResponse uses the generator function and sets the necessary media type
-    return StreamingResponse(
-        generate_frames(model, log_manager),
-        media_type="multipart/x-mixed-replace;boundary=frame"
+with col1:
+    st.header("Live Attendance & Access Control")
+    st.info("Please allow camera access. The system is running recognition models directly on the video stream.")
+
+    # 3. WebRTC Streamer Setup
+    # This widget handles camera access, video streaming, and uses the transformer class
+    webrtc_streamer(
+        key="smart-office-stream",
+        mode=WebRtcMode.SENDRECV,
+        video_processor_factory=lambda: FaceRecognitionTransformer(model, log_manager),
+        async_processing=True,
+        media_stream_constraints={"video": True, "audio": False},
     )
 
-# --- Log Endpoint (Recruiter can hit this to see the DB) ---
-@app.get("/logs")
-async def get_logs():
-    """Endpoint to return the current log data."""
-    return {"logs": log_manager.get_recent_logs(limit=50)}
+with col2:
+    st.header("Access Log")
+    
+    # Refresh log every 5 seconds (to simulate real-time updates)
+    time.sleep(1) # Simple sleep to allow model time to process the first frame
+    
+    # Display the latest access log data
+    latest_logs = log_manager.get_recent_logs(limit=10)
+    
+    if latest_logs:
+        st.subheader("Latest Recognized Entries")
+        # Display logs in a table/dataframe format
+        st.dataframe(latest_logs, use_container_width=True)
+    else:
+        st.warning("No successful entries recorded yet.")
 
-
-if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+st.markdown("---")
+st.caption("Powered by Streamlit, WebRTC, and Deepface models.")
