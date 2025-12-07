@@ -29,8 +29,9 @@ col1, col2 = st.columns([2, 1])
 
 with col1:
     st.header("Live Recognition Feed")
-    # Streamlit component to hold the video feed
-    FRAME_HOLDER = st.image([], caption="Webcam Stream", width=640)
+    # --- FIX: Use st.empty() for safe placeholder initialization ---
+    FRAME_HOLDER = st.empty() 
+    # -----------------------------------------------------------------
 
 with col2:
     st.header("Access Log (DB)")
@@ -79,7 +80,15 @@ if st.session_state.start_camera:
             
             # 1. Update Video Feed (Streamlit uses RGB)
             processed_frame_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
-            FRAME_HOLDER.image(processed_frame_rgb, channels="RGB", width=640)
+            
+            # --- FIX: Update the placeholder with the actual image and caption ---
+            FRAME_HOLDER.image(
+                processed_frame_rgb, 
+                caption="Live Webcam Stream (640px)", # Caption passed here
+                channels="RGB", 
+                width=640
+            )
+            # -----------------------------------------------------------------
 
             # 2. Log to DB and Update Display 
             if log_data and log_data.get('user_id') != 'Unknown': # Only log successful or definite attempts
