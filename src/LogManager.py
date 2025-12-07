@@ -4,18 +4,24 @@ import sqlite3
 import datetime
 import os
 
-# Define the path to your database file
-DATABASE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'access_log.db')
+# --- CHANGE: Remove the file path definition ---
+# DATABASE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'access_log.db')
 
 class LogManager:
-    def __init__(self, db_file=DATABASE_FILE):
+    # --- CHANGE: Default db_file to ':memory:' if none is provided ---
+    def __init__(self, db_file=':memory:'): 
+        """
+        Initializes the LogManager. By default, uses an in-memory database 
+        for cloud deployment stability. Logs will be lost on app restart.
+        """
         self.db_file = db_file
         self._initialize_db()
 
     def _initialize_db(self):
-        """Creates the database file and the access_log table if they don't exist."""
+        """Creates the database (in-memory or file) and the access_log table."""
         try:
-            conn = sqlite3.connect(self.db_file)
+            # The database connection will open an in-memory DB if self.db_file == ':memory:'
+            conn = sqlite3.connect(self.db_file) 
             cursor = conn.cursor()
             
             # Table Schema: Timestamp, User, Status, Confidence
@@ -30,7 +36,11 @@ class LogManager:
             """)
             conn.commit()
             conn.close()
-            print(f"INFO: Database initialized at {self.db_file}")
+            # Inform the user where the database is located
+            if self.db_file == ':memory:':
+                print("INFO: Database initialized in-memory.")
+            else:
+                print(f"INFO: Database initialized at {self.db_file}")
 
         except sqlite3.Error as e:
             print(f"ERROR: SQLite initialization failed: {e}")
@@ -51,7 +61,6 @@ class LogManager:
             )
             conn.commit()
             conn.close()
-            # print(f"LOGGED: {timestamp}, {status}, {user_id}") # Optional debug print
             
         except sqlite3.Error as e:
             print(f"ERROR: Failed to write to database: {e}")
