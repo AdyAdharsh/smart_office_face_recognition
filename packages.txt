@@ -4,3 +4,5 @@ libsm6
 libxext6
 libxrender1
 gfortran
+libopenblas-dev  
+pkg-config
