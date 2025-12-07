@@ -1,7 +1,7 @@
 # app.py (Streamlit WebRTC Cloud Deployment)
 
 import streamlit as st
-import cv2
+
 import time
 from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, WebRtcMode
 
