@@ -11,6 +11,11 @@ class CameraThread(QThread):
     frame_ready = Signal(QImage)
     log_message = Signal(str)
     
+    # --- NEW SIGNAL FOR STRUCTURED DB LOGGING ---
+    # Emits: user_id (str), status (str), confidence (float)
+    log_event = Signal(str, str, float) 
+    # -------------------------------------------
+    
     def __init__(self, model: RecognitionModel, camera_index=0, parent=None):
         super().__init__(parent)
         self.model = model
@@ -32,11 +37,13 @@ class CameraThread(QThread):
                 self.log_message.emit("ERROR: Failed to read frame from camera.")
                 break
 
-            # Process the frame using the RecognitionModel
-            processed_frame, log_msg, recognized_user = self.model.process_frame(
+            # --- MODIFICATION: RecognitionModel now returns structured log data ---
+            # It now returns 4 values: processed_frame, log_msg, recognized_user, log_data
+            processed_frame, log_msg, recognized_user, log_data = self.model.process_frame(
                 frame, 
                 detector_mode=self.detector_mode
             )
+            # --------------------------------------------------------------------
 
             # Convert OpenCV BGR image (NumPy array) to QImage (RGB format)
             h, w, ch = processed_frame.shape
@@ -49,8 +56,17 @@ class CameraThread(QThread):
             # Emit the signals back to the main thread
             self.frame_ready.emit(qt_image)
             
-            if recognized_user:
+            # If the RecognitionModel returned structured log data, emit both logs
+            if log_data:
+                # 1. Emit the verbose log message for the GUI console
                 self.log_message.emit(log_msg)
+                
+                # 2. Emit the structured data for the Database
+                user_id = log_data.get('user_id', 'Unknown')
+                status = log_data.get('status', 'Denied')
+                confidence = log_data.get('confidence', 0.0)
+                
+                self.log_event.emit(user_id, status, confidence)
             
             # Control the framerate (adjust as needed)
             time.sleep(0.01) 

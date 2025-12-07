@@ -4,13 +4,12 @@ import os
 import pickle
 import cv2
 import numpy as np
+from deepface import DeepFace 
 
 # Import your existing core logic functions
-# NOTE: Ensure these paths are correct relative to where you run the code
 from src.detect import detect_face
 from src.embed import get_embedding as extract_embedding
 from src.utils import load_embeddings as load_known_embeddings, save_embeddings as save_known_embeddings
-from deepface import DeepFace
 
 class RecognitionModel:
     """
@@ -24,7 +23,7 @@ class RecognitionModel:
         self.recognize_threshold = 0.5  # Cosine similarity threshold
 
     def _load_data(self):
-        """Loads known embeddings from the pickle file."""
+        """Loads known embeddings and names from the pickle file."""
         if not os.path.exists(self.embedding_path):
             print("INFO: Embeddings file not found. Starting with empty database.")
             return [], []
@@ -32,43 +31,46 @@ class RecognitionModel:
         known_embeddings, known_names = load_known_embeddings(self.embedding_path)
         return known_embeddings, known_names
 
-    # NOTE: The get_detector_function method is REMOVED as detect_face handles the mode internally.
 
     def process_frame(self, frame: np.ndarray, detector_mode='cnn'):
         """
         Detects faces in a frame, extracts embeddings, and performs recognition.
 
-        Returns: (processed_frame, log_message, recognized_user)
+        Returns: (processed_frame, log_msg, recognized_user, log_data)
         """
         detected_results = []
         
+        # Initialize log variables
+        recognized_user = None
+        log_message = "No face detected"
+        log_data = None # Will store {'user_id': ..., 'status': ..., 'confidence': ...}
+        
         try:
-            # --- FIX: Map the internal detector mode name to the DeepFace backend name ---
+            # --- Map the internal detector mode name to the DeepFace backend name ---
             if detector_mode == 'cnn':
-                backend_name = 'mtcnn'  # DeepFace name for CNN-based MTCNN detection
+                backend_name = 'mtcnn'
             elif detector_mode == 'classical':
-                backend_name = 'opencv' # DeepFace name for Haar Cascade detection
+                backend_name = 'opencv'
             else:
                 backend_name = 'mtcnn'
             # --------------------------------------------------------------------------
             
-            # We must use the RGB version here for DeepFace's raw API calls
+            # Convert to RGB for DeepFace's raw API calls
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
-            # 1. Detect faces and get bounding boxes using the mapped backend_name
+            # 1. Detect faces and get bounding boxes
             detected_results = DeepFace.extract_faces(
                 frame_rgb, 
-                detector_backend=backend_name, # <-- USING THE MAPPED NAME
+                detector_backend=backend_name, 
                 enforce_detection=False
             )
             
         except Exception as e:
-            # Handle case where DeepFace/CV fails entirely (e.g., model loading error)
+            # Handle case where DeepFace/CV fails entirely
+            # log_data is None in this error case
             print(f"DeepFace/CV detection failed in RecognitionModel: {e}")
-            return frame, "ERROR: Detection failed", None
+            return frame, "ERROR: Detection failed", None, None
         
-        recognized_user = None
-        log_message = "No face detected"
         
         # Now iterate over the structured results
         for item in detected_results:
@@ -77,15 +79,20 @@ class RecognitionModel:
             # Extract coordinates (x, y, w, h)
             x, y, w, h = region['x'], region['y'], region['w'], region['h']
             
-            # Crop the face image (use the original BGR frame for coordinates, though colors are handled below)
+            # Crop the face image (use the original BGR frame)
             face_img = frame[y:y+h, x:x+w] 
-            face_img = cv2.resize(face_img, (160, 160)) # Resize for FaceNet (160x160)
+            face_img = cv2.resize(face_img, (160, 160)) 
             
-            # Convert to RGB for the embedding step, as FaceNet models usually expect RGB
+            # Convert to RGB for the embedding step
             face_img_rgb = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
             
             # 2. Extract embedding
-            embedding = extract_embedding(face_img_rgb) # Use the RGB image for embedding
+            embedding = extract_embedding(face_img_rgb) 
+
+            best_distance = 0.0 # Default confidence
+            current_user_id = "Unknown"
+            current_status = "Denied"
+            color = (0, 0, 255) # Default Red (BGR)
 
             if embedding is not None and self.known_embeddings:
                 # 3. Recognition (using Cosine Similarity)
@@ -93,26 +100,42 @@ class RecognitionModel:
                             np.linalg.norm(self.known_embeddings, axis=1) * np.linalg.norm(embedding)
                         )
                 best_match_index = np.argmax(distances)
-                best_distance = distances[best_match_index]
+                best_distance = float(distances[best_match_index])
 
                 if best_distance > self.recognize_threshold:
-                    recognized_user = self.known_names[best_match_index]
-                    log_message = f"Access Granted: {recognized_user} ({best_distance:.2f})"
-                    color = (0, 255, 0) # Green (BGR)
+                    current_user_id = self.known_names[best_match_index]
+                    current_status = "Granted"
+                    log_message = f"Access Granted: {current_user_id} ({best_distance:.2f})"
+                    color = (0, 255, 0) # Green
                 else:
-                    recognized_user = "Unknown"
+                    current_user_id = "Unknown"
+                    current_status = "Denied"
                     log_message = f"Access Denied (Confidence: {best_distance:.2f})"
-                    color = (0, 0, 255) # Red (BGR)
+                    # Color is already Red
             else:
-                color = (255, 255, 0) # Yellow (BGR) (Face detected, but no DB or embedding failed)
-                log_message = "Face detected, no DB or bad embedding"
+                log_message = "Face detected, no DB or embedding failed"
+                color = (255, 255, 0) # Yellow
+            
+            # Assign final recognized user name (the last one detected/recognized in the frame)
+            recognized_user = current_user_id
+            
+            # --- NEW: Package the structured data for logging ---
+            # This is created for EVERY face detected in the frame.
+            log_data = {
+                'user_id': current_user_id,
+                'status': current_status,
+                'confidence': best_distance
+            }
+            # ----------------------------------------------------
+
 
             # Draw bounding box and text (using BGR frame)
             frame = cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
             if recognized_user:
                 cv2.putText(frame, recognized_user, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
         
-        # If no faces were detected, log_message remains "No face detected"
-        # If detection was successful, log_message holds the last recognition result.
+        # If no faces were detected, log_message and log_data remain their initialized values
         
-        return frame, log_message, recognized_user
+        # --- MODIFICATION: RETURN 4 VALUES ---
+        return frame, log_message, recognized_user, log_data
+        # -------------------------------------
