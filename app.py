@@ -1,13 +1,66 @@
-# app.py (New File for Streamlit Web Demo)
+# app.py (WebRTC Implementation for Camera Access)
 
 import streamlit as st
 import cv2
 import numpy as np
 import time
 
+# --- NEW IMPORTS for WebRTC ---
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
+# ------------------------------
+
 # Import your core logic
 from src.RecognitionModel import RecognitionModel
 from src.LogManager import LogManager
+
+# --- Streamlit Session State for Log Management ---
+# Global function to display logs since the transformer cannot access the main page directly
+def update_log_display(log_manager, log_placeholder):
+    recent_logs = log_manager.get_recent_logs(limit=15)
+    log_content = ""
+    for ts, status, user_id, confidence in recent_logs:
+        display_user = user_id if user_id and user_id != 'Unknown' else "N/A"
+        display_conf = f" ({confidence:.2f})" if confidence is not None else "0.00"
+        color = "green" if status == "Granted" else "red"
+        
+        log_content += f"<p style='color:{color}; font-size:14px; margin:0;'>{ts} - **{status.upper()}**: {display_user}{display_conf}</p>"
+    
+    log_placeholder.markdown(log_content, unsafe_allow_html=True)
+
+
+# --- Video Processing Class (Replaces the while loop) ---
+class FaceRecognitionTransformer(VideoTransformerBase):
+    """
+    Handles frame processing for the WebRTC stream.
+    This class runs on a separate server thread and only processes the image data.
+    """
+    def __init__(self, model, log_manager, detector_mode):
+        self.model = model
+        self.log_manager = log_manager
+        self.detector_mode = detector_mode
+        self.last_log_time = time.time()
+        
+    def transform(self, frame):
+        # 1. Convert video stream frame (AVFrame) to NumPy array (BGR format for OpenCV)
+        img = frame.to_ndarray(format="bgr24")
+
+        # 2. Process frame using your existing logic (Returns: frame, log_msg, recognized_user, log_data)
+        processed_frame, log_msg, recognized_user, log_data = self.model.process_frame(
+            img, 
+            detector_mode=self.detector_mode
+        )
+        
+        # 3. Log to DB (runs every time a face is processed)
+        if log_data and log_data.get('user_id') != 'Unknown':
+            self.log_manager.log_access_event(
+                log_data.get('user_id'), 
+                log_data.get('status'), 
+                log_data.get('confidence')
+            )
+        
+        # 4. Return the processed frame (BGR format) to the WebRTC streamer
+        return processed_frame
+
 
 # --- Initialization (runs once) ---
 @st.cache_resource
@@ -26,8 +79,6 @@ col1, col2 = st.columns([2, 1])
 
 with col1:
     st.header("Live Recognition Feed")
-    # Placeholder for the video feed
-    FRAME_HOLDER = st.empty() 
 
 with col2:
     st.header("Access Log (DB)")
@@ -44,79 +95,31 @@ mode_select = st.selectbox(
 st.markdown("---")
 
 
-# --- Real-Time Processing Loop ---
+# --- WebRTC Streamer (Replaces the OpenCV Loop) ---
 
-# Use Streamlit's session state to manage the camera state
-if 'start_camera' not in st.session_state:
-    st.session_state.start_camera = True
+ctx = webrtc_streamer(
+    key="face-recognition-stream",
+    # Pass a factory function that creates the transformer instance, passing necessary arguments
+    video_processor_factory=lambda: FaceRecognitionTransformer(
+        model=model, 
+        log_manager=log_manager, 
+        detector_mode=mode_select
+    ),
+    media_stream_constraints={"video": True, "audio": False},
+    async_transform=True
+)
 
-if st.session_state.start_camera:
+# --- Log Display Loop (Updates the GUI Log Separately) ---
+
+if ctx.state.playing:
+    st.sidebar.success("Webcam Stream Active. Processing...")
     
-    # --- FIX 1: Initialize status_text container outside the conditional check ---
-    # This prevents the NameError if the camera fails immediately.
-    status_text = st.empty() 
-    # --------------------------------------------------------------------------
-    
-    # Use OpenCV to capture the video
-    cap = cv2.VideoCapture(0)
-
-    if not cap.isOpened():
-        # Use the initialized container to show the error
-        status_text.error("Cannot open webcam. Camera access denied or busy. Check permissions.")
+    # Loop to refresh the log display while the stream is active
+    while True:
+        update_log_display(log_manager, LOG_TEXT)
+        time.sleep(1) # Refresh log every second
         
-        # --- FIX 2: Stop execution cleanly if camera access is denied ---
-        st.stop()
-        # --------------------------------------------------------------
-        
-    else:
-        # Use the initialized container to show info
-        status_text.info("Recognition running... Look into the camera.")
-        
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                status_text.warning("Failed to read frame.")
-                break
-                
-            # Call your existing recognition logic (Returns: frame, log_msg, recognized_user, log_data)
-            processed_frame, log_msg, recognized_user, log_data = model.process_frame(
-                frame, 
-                detector_mode=mode_select
-            )
-            
-            # 1. Update Video Feed (Streamlit uses RGB)
-            processed_frame_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
-            
-            FRAME_HOLDER.image(
-                processed_frame_rgb, 
-                caption="Live Webcam Stream (640px)",
-                channels="RGB", 
-                width=640
-            )
-
-            # 2. Log to DB and Update Display 
-            if log_data and log_data.get('user_id') != 'Unknown':
-                log_manager.log_access_event(
-                    log_data.get('user_id'), 
-                    log_data.get('status'), 
-                    log_data.get('confidence')
-                )
-                
-            # Display logs from DB
-            recent_logs = log_manager.get_recent_logs(limit=15)
-            log_content = ""
-            for ts, status, user_id, confidence in recent_logs:
-                display_user = user_id if user_id and user_id != 'Unknown' else "N/A"
-                display_conf = f" ({confidence:.2f})" if confidence is not None else "0.00"
-                color = "green" if status == "Granted" else "red"
-                
-                log_content += f"<p style='color:{color}; font-size:14px; margin:0;'>{ts} - **{status.upper()}**: {display_user}{display_conf}</p>"
-            
-            LOG_TEXT.markdown(log_content, unsafe_allow_html=True)
-            
-            # Streamlit loop needs to yield control quickly
-            time.sleep(0.01)
-
-    # Cleanup (Only runs if the while loop is broken out of, but safe now)
-    cap.release()
-    status_text.warning("Application stopped.")
+else:
+    # Display message if stream is not active
+    if not ctx.state.last_video_frame:
+        st.info("Click 'START' above and allow camera access to begin recognition.")
